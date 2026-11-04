@@ -1,31 +1,51 @@
-TONA 0.2 — ishga tushirish
+TONA 0.3 — profil, hikoyalar, maxfiylik va moderatsiya
 
-Python 3.12. pip install -r requirements.txt
+Ishga tushirish:
+Python 3.12; pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 
-Render: Docker runtime, health check /healthz, bitta instance.
-Doimiy disk: /data. TONA_DATA_DIR=/data.
-Diskli hosting pullik; bepul vaqtinchalik diskda akkauntlar yo‘qolishi mumkin.
+Hozir Render FREE, Docker, bitta instance. Health check: /healthz.
+TONA_EPHEMERAL=true. Doimiy disk yo‘q. Qayta deploy/restartda ma’lumotlar
+va administrator huquqi ham yo‘qolishi mumkin. render.yaml bepul tarifni ishlatadi.
+Ommaviy, doimiy xizmat uchun tashqi doimiy baza, media saqlash va backup kerak.
 
-Email kodlari: SMTP_HOST, SMTP_PORT (587), SMTP_FROM, SMTP_USER, SMTP_PASSWORD.
-SMS kodlari: Twilio Verify loyihasining TWILIO_ACCOUNT_SID,
-TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID qiymatlari.
-Sirlarni faqat Render Environment oynasida kiriting, GitHub’ga yuklamang.
-Hozir TONA_REQUIRE_VERIFICATION=false: telefon/email + parol bilan ro‘yxatdan o‘tiladi.
-Telefon/email egaligi tasdiqlanmaydi; kontaktlar username orqali ikki tomon roziligi bilan qo‘shiladi.
-Provayderlar ulangach TONA_REQUIRE_VERIFICATION=true qilib yangi akkauntlar uchun kodni yoqing.
-Avvalgi bazadagi akkauntlar avtomatik qayta tasdiqlanmaydi.
+Profil rasmi (5 MB), display name, bio (160 belgi), rasm maxfiyligi,
+qidiruvdan yashirish, yangi kontakt so‘rovlarini yopish, light/dark rejim,
+xabar shrift o‘lchami, faol qurilmalar, boshqa seanslarni tugatish,
+parol almashtirish, kontaktlarni bloklash, 24 soatlik hikoya va reels ishlaydi.
 
-Kontaktlar ikki tomon roziligi bilan qo‘shiladi. Reels va stories faqat
-muallif va uning tasdiqlangan kontaktlariga ochiladi. Kontakt o‘chirilsa,
-server yangi kirishni rad etadi; allaqachon yuklab olingan nusxani qaytarib bo‘lmaydi.
+Xavfsizlik: HttpOnly/SameSite sessiya cookie, HTTPS ostida Secure cookie,
+CSRF origin/header tekshiruvi, strict CSP, PBKDF2-SHA256 600000 iteratsiya
+(eski parollar bilan moslik saqlangan), yuklama/urinish limitlari, rasmni
+qayta kodlash va EXIF/GPS metama’lumotlarini tashlash. Video sarlavhasi
+tekshiriladi, ammo professional zararli fayl skaneri ulanmagan.
+
+Moderatsiya:
+Spam, firibgarlik, tazyiq, zo‘ravonlik, ekstremizm va bolalar xavfsizligi
+bo‘yicha shikoyatlar. Faqat shikoyatga tegishli profil/post/xabar nusxasi
+navbatga olinadi. Moderator postni yashirishi, akkauntni cheklashi yoki
+shikoyatni yopishi mumkin. Amallar jurnalga yoziladi.
+
+Ega akkaunti: @nosirkhon. Username o‘zi administrator huquqini bermaydi.
+1. Render Environment’da TONA_OWNER_USERNAME=nosirkhon saqlansin.
+2. TONA_OWNER_KEY uchun kamida 32 belgili tasodifiy maxfiy kalitni egasi o‘zi kiritsin.
+3. @nosirkhon akkauntida Sozlamalar > Xavfsizlik > Egasi boshqaruvini
+   faollashtirish tugmasiga bosib, shu kalitni kiritsin.
+Kalitni GitHub’ga, ommaviy faylga yoki boshqa odamlarga bermang.
+Kalit ulanmaguncha moderator tayinlanmaydi; shikoyatlar faqat saqlanadi.
+Baza reset bo‘lsa, egasi o‘z akkauntida shu kalit bilan huquqni qayta oladi.
+
+Telefon/email + parol rejimi tanlangan; egalik hali tasdiqlanmaydi.
+SMS/email keyinchalik: TONA_REQUIRE_VERIFICATION=true, SMTP_HOST,
+SMTP_PORT=587, SMTP_FROM, SMTP_USER, SMTP_PASSWORD va Twilio Verify uchun
+TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID.
 
 Sinov: pip install pytest httpx; python -m pytest test_app.py -q
-Testlar uch akkaunt, xabarlar, WebSocket, media ruxsatlari, kontaktni o‘chirish,
-postni o‘chirish, noto‘g‘ri kod va logoutni tekshiradi. SMS/email provayderlari
-haqiqiy xizmat bilan sinovdan o‘tkazilmadi.
+7 ta integratsion test: chat, media ruxsatlari, profil, cookie/CSRF,
+seanslar, parol, bloklash, hikoya muddati va moderatsiya.
+Mahalliy demo akkauntlari deploy paketiga kiritilmagan.
 
-Cheklovlar: bu boshlang‘ich chat versiyasi; audio/videoqo‘ng‘iroqlar, guruhlar,
-end-to-end shifrlash, parolni tiklash va katta yuklama uchun ko‘p serverli
-arxitektura hali yo‘q. Ommaviy chiqarishdan avval provayder, backup va
-haqiqiy ikki qurilmadagi sinovlarni yakunlang.
+Cheklovlar: end-to-end shifrlash, audio/videoqo‘ng‘iroqlar, guruhlar,
+avtomatik terrorizm/jinoyat aniqlash, doimiy navbatchi moderatsiya, parolni
+unutganda tiklash, store ilovalari va professional audit hali yo‘q.
+Noqonuniy faoliyatning butunlay bo‘lmasligi kafolatlanmaydi.

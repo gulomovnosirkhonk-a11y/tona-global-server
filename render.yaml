@@ -1,29 +1,15 @@
 services:
   - type: web
-    name: tona-chat
+    name: tona-global-server
     runtime: docker
-    plan: starter
+    plan: free
     healthCheckPath: /healthz
-    disk:
-      name: tona-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: TONA_DATA_DIR
         value: /data
       - key: TONA_REQUIRE_VERIFICATION
         value: "false"
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_FROM
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: TWILIO_VERIFY_SERVICE_SID
-        sync: false
+      - key: TONA_EPHEMERAL
+        value: "true"
+      - key: TONA_OWNER_USERNAME
+        value: nosirkhon
