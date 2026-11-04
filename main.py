@@ -67,7 +67,7 @@ def admin_ids():
  with db() as c:return {r['id'] for r in c.execute('SELECT id FROM users WHERE is_moderator=1 AND banned=0')}
 
 def set_session(response,request,token):
- response.set_cookie('tona_session',token,httponly=True,secure=request.url.scheme=='https',samesite='lax',max_age=30*86400,path='/')
+ response.set_cookie('tona_session',token,httponly=True,secure=request.url.hostname not in ('127.0.0.1','localhost','testserver'),samesite='lax',max_age=30*86400,path='/')
  with db() as c:c.execute('INSERT OR REPLACE INTO session_info VALUES(?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),request.headers.get('user-agent','Unknown')[:250],now()))
 
 def request_token(request,authorization=None):
