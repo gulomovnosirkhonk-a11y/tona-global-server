@@ -1,7 +1,8 @@
 import os, sqlite3, secrets, hashlib, hmac, json, re, time, asyncio
 import smtplib, ssl, urllib.request, urllib.parse, urllib.error, base64
 from email.message import EmailMessage
-from fastapi import Request, Response
+from fastapi import Request, Response, Query
+from migrations import upgrade
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 import io, warnings
@@ -9,7 +10,7 @@ from typing import Literal
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import contextmanager
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -19,7 +20,7 @@ DATA=Path(os.getenv('TONA_DATA_DIR',str(BASE/'data'))); DATA.mkdir(parents=True,
 MEDIA=DATA/'media'; MEDIA.mkdir(exist_ok=True)
 DB=DATA/'tona.db'
 REQUIRE_VERIFICATION=os.getenv('TONA_REQUIRE_VERIFICATION','false').lower()=='true'
-app=FastAPI(title='TONA Global API',version='0.4.0')
+app=FastAPI(title='TONA Global API',version='0.6.0')
 
 
 @contextmanager
@@ -61,6 +62,8 @@ with db() as c:
  CREATE TABLE IF NOT EXISTS session_info(token_hash TEXT PRIMARY KEY,device TEXT NOT NULL,created INTEGER NOT NULL);
  """)
 
+with db() as c:upgrade(c)
+
 def is_blocked(c,a,b):
  return bool(c.execute('SELECT 1 FROM blocks WHERE (owner=? AND target=?) OR (owner=? AND target=?)',(a,b,b,a)).fetchone())
 def admin_ids():
@@ -84,7 +87,7 @@ async def security_headers(request,call_next):
  response.headers['X-Content-Type-Options']='nosniff'
  response.headers['X-Frame-Options']='DENY'
  response.headers['Referrer-Policy']='no-referrer'
- response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
+ response.headers['Permissions-Policy']='camera=(self), microphone=(self), geolocation=()'
  response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
  if request.url.path.startswith(('/api/','/media/')):response.headers['Cache-Control']='no-store'
  elif request.url.path in ('/','/app.js','/i18n.js','/style.css'):response.headers['Cache-Control']='no-cache, must-revalidate'
@@ -188,7 +191,10 @@ class Login(BaseModel):
  contact:str=Field(max_length=254)
  password:str=Field(max_length=128)
 class FriendRequest(BaseModel): user_id:int
-class Message(BaseModel): recipient:int;body:str=Field(min_length=1,max_length=4000)
+class Message(BaseModel):
+ recipient:int
+ body:str=Field(min_length=1,max_length=4000)
+ reply_to:int|None=Field(default=None,ge=1)
 class Post(BaseModel): kind:str;media_url:str=Field(max_length=500);caption:str=Field(default='',max_length=500)
 
 @app.get('/static/tona-logo.png')
@@ -257,7 +263,7 @@ def friend_request(x:FriendRequest,u=Depends(current_user)):
 @app.get('/api/friends')
 def friends(u=Depends(current_user)):
  with db() as c:
-  rows=c.execute('''SELECT f.a,f.b,f.status,f.requester,other.id,other.username,other.display_name,other.bio,other.avatar,other.avatar_visibility FROM friendships f JOIN users other ON other.id=CASE WHEN f.a=? THEN f.b ELSE f.a END WHERE f.a=? OR f.b=?''',(u['id'],u['id'],u['id'])).fetchall()
+  rows=c.execute('''SELECT f.a,f.b,f.status,f.requester,other.id,other.username,other.display_name,other.bio,other.bio_visibility,other.avatar,other.avatar_visibility FROM friendships f JOIN users other ON other.id=CASE WHEN f.a=? THEN f.b ELSE f.a END WHERE f.a=? OR f.b=?''',(u['id'],u['id'],u['id'])).fetchall()
   return [{k:r[k] for k in ('a','b','status','requester')} | public_profile(c,dict(r),u['id']) for r in rows if not is_blocked(c,u['id'],r['id'])]
 @app.post('/api/friends/{other}/accept')
 def accept(other:int,u=Depends(current_user)):
@@ -273,10 +279,10 @@ def remove_friend(other:int,u=Depends(current_user)):
  with db() as c:c.execute('DELETE FROM friendships WHERE a=? AND b=?',(a,b))
  return {'ok':True}
 @app.get('/api/messages/{other}')
-def history(other:int,u=Depends(current_user)):
+def history(other:int,q:str=Query(default='',max_length=200),before:int|None=Query(default=None,ge=1),limit:int=Query(default=100,ge=1,le=100),u=Depends(current_user)):
  with db() as c:
   if not is_friend(c,u['id'],other):raise HTTPException(403,'Only accepted friends can chat')
-  rows=c.execute('''SELECT * FROM (SELECT id,sender,recipient,body,created FROM messages WHERE (sender=? AND recipient=?) OR (sender=? AND recipient=?) ORDER BY id DESC LIMIT 100) ORDER BY id ASC''',(u['id'],other,other,u['id'])).fetchall()
+  rows=c.execute("""SELECT * FROM (SELECT * FROM messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND (? IS NULL OR id<?) AND (?='' OR (deleted_at IS NULL AND instr(lower(body),lower(?))>0)) ORDER BY id DESC LIMIT ?) ORDER BY id ASC""",(u['id'],other,other,u['id'],before,before,q,q,limit)).fetchall()
  return [dict(r) for r in rows]
 connections={}
 async def broadcast(uid,event):
@@ -293,8 +299,11 @@ async def send(x:Message,u=Depends(current_user)):
  rate_limit('message:'+str(u['id']),120,60)
  with db() as c:
   if not is_friend(c,u['id'],x.recipient):raise HTTPException(403,'Only accepted friends can chat')
-  cur=c.execute('INSERT INTO messages(sender,recipient,body,created) VALUES(?,?,?,?)',(u['id'],x.recipient,x.body,now()))
-  msg={'id':cur.lastrowid,'sender':u['id'],'recipient':x.recipient,'body':x.body,'created':now()}
+  if x.reply_to is not None:
+   parent=c.execute('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL',(x.reply_to,)).fetchone()
+   if not parent or {parent['sender'],parent['recipient']}!={u['id'],x.recipient}:raise HTTPException(404,'Reply message unavailable')
+  cur=c.execute('INSERT INTO messages(sender,recipient,body,created,reply_to) VALUES(?,?,?,?,?)',(u['id'],x.recipient,x.body,now(),x.reply_to))
+  msg=dict(c.execute('SELECT * FROM messages WHERE id=?',(cur.lastrowid,)).fetchone())
  await broadcast(x.recipient,{'type':'message','message':msg});await broadcast(u['id'],{'type':'message','message':msg})
  return msg
 @app.websocket('/ws')
@@ -393,7 +402,8 @@ def delete_post(post_id:int,u=Depends(current_user)):
 # Profile data is deliberately separate from private phone/email identifiers.
 def public_profile(c,row,viewer):
  visible=row['id']==viewer or row['avatar_visibility']=='everyone' or (row['avatar_visibility']=='contacts' and is_friend(c,viewer,row['id']))
- return {k:row[k] for k in ('id','username','display_name','bio')} | {'avatar_url':f"/api/avatar/{row['id']}" if row['avatar'] and visible else ''}
+ bio_visible=row['id']==viewer or row.get('bio_visibility','everyone')=='everyone' or (row.get('bio_visibility')=='contacts' and is_friend(c,viewer,row['id']))
+ return {k:row[k] for k in ('id','username','display_name')} | {'bio':row['bio'] if bio_visible else '', 'avatar_url':f"/api/avatar/{row['id']}" if row['avatar'] and visible else ''}
 
 def normalize_image(path,avatar=False):
  Image.MAX_IMAGE_PIXELS=8_000_000
@@ -410,6 +420,7 @@ class ProfileUpdate(BaseModel):
  bio:str=Field(default='',max_length=160)
 class SettingsUpdate(BaseModel):
  avatar_visibility:Literal['everyone','contacts','nobody']='contacts'
+ bio_visibility:Literal['everyone','contacts','nobody']='everyone'
  discoverable:bool=True
  allow_requests:bool=True
  theme:Literal['light','dark']='light'
@@ -430,7 +441,9 @@ def profile(uid:int,u=Depends(current_user)):
   return public_profile(c,dict(row),u['id'])
 @app.patch('/api/settings')
 def update_settings(x:SettingsUpdate,u=Depends(current_user)):
- with db() as c:c.execute('UPDATE users SET avatar_visibility=?,discoverable=?,allow_requests=?,theme=?,font_size=? WHERE id=?',(x.avatar_visibility,x.discoverable,x.allow_requests,x.theme,x.font_size,u['id']))
+ values=x.model_dump(exclude_unset=True)
+ if values:
+  with db() as c:c.execute('UPDATE users SET '+','.join(key+'=?' for key in values)+' WHERE id=?',(*values.values(),u['id']))
  return {'ok':True}
 @app.post('/api/profile/avatar')
 async def upload_avatar(file:UploadFile=File(...),u=Depends(current_user)):
@@ -574,3 +587,140 @@ def claim_owner(x:OwnerClaim,u=Depends(current_user)):
   raise HTTPException(403,'Egaga tegishli kalit noto‘g‘ri yoki hali sozlanmagan')
  with db() as c:c.execute('UPDATE users SET is_moderator=1 WHERE id=?',(u['id'],))
  return {'ok':True}
+
+
+class MessageEdit(BaseModel):
+ body:str=Field(min_length=1,max_length=4000)
+
+@app.patch('/api/messages/item/{mid}')
+async def edit_message(mid:int,x:MessageEdit,u=Depends(current_user)):
+ if not x.body.strip():raise HTTPException(400,'Xabar bo‘sh bo‘lishi mumkin emas')
+ rate_limit('message_edit:'+str(u['id']),120,60)
+ with db() as c:
+  row=c.execute('SELECT * FROM messages WHERE id=? AND sender=? AND deleted_at IS NULL',(mid,u['id'])).fetchone()
+  if not row or not is_friend(c,u['id'],row['recipient']):raise HTTPException(404,'Message unavailable')
+  c.execute('UPDATE messages SET body=?,edited_at=? WHERE id=?',(x.body,now(),mid))
+  result=dict(c.execute('SELECT * FROM messages WHERE id=?',(mid,)).fetchone())
+ for uid in (result['sender'],result['recipient']):await broadcast(uid,{'type':'message','message':result})
+ return result
+
+@app.delete('/api/messages/item/{mid}')
+async def delete_message(mid:int,u=Depends(current_user)):
+ with db() as c:
+  row=c.execute('SELECT * FROM messages WHERE id=? AND sender=?',(mid,u['id'])).fetchone()
+  if not row:raise HTTPException(404,'Message unavailable')
+  # Remove message text; retain a tombstone so replies and synchronization remain coherent.
+  c.execute("UPDATE messages SET body='',deleted_at=COALESCE(deleted_at,?) WHERE id=?",(now(),mid))
+  result=dict(c.execute('SELECT * FROM messages WHERE id=?',(mid,)).fetchone())
+ for uid in (result['sender'],result['recipient']):await broadcast(uid,{'type':'message','message':result})
+ return {'ok':True}
+
+class ReadMessages(BaseModel):
+ through_id:int=Field(ge=1)
+
+@app.post('/api/messages/{other}/read')
+async def read_messages(other:int,x:ReadMessages,u=Depends(current_user)):
+ with db() as c:
+  if not is_friend(c,u['id'],other):raise HTTPException(403,'Only accepted friends can chat')
+  seen=c.execute('SELECT 1 FROM messages WHERE id=? AND sender=? AND recipient=?',(x.through_id,other,u['id'])).fetchone()
+  if not seen:raise HTTPException(404,'Message unavailable')
+  stamp=now();changed=c.execute('UPDATE messages SET read_at=? WHERE sender=? AND recipient=? AND id<=? AND read_at IS NULL AND deleted_at IS NULL',(stamp,other,u['id'],x.through_id)).rowcount
+ if changed:await broadcast(other,{'type':'read','reader':u['id'],'read_at':stamp})
+ return {'ok':True}
+
+@app.get('/api/saved')
+def saved_notes(before:int|None=Query(default=None,ge=1),u=Depends(current_user)):
+ with db() as c:return [dict(r) for r in c.execute('SELECT id,body,created,updated FROM saved_notes WHERE owner=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT 100',(u['id'],before,before))]
+
+@app.post('/api/saved')
+def create_note(x:MessageEdit,u=Depends(current_user)):
+ if not x.body.strip():raise HTTPException(400,'Xabar bo‘sh bo‘lishi mumkin emas')
+ rate_limit('notes:'+str(u['id']),120,60)
+ with db() as c:
+  cur=c.execute('INSERT INTO saved_notes(owner,body,created,updated) VALUES(?,?,?,?)',(u['id'],x.body,now(),now()))
+  return {'id':cur.lastrowid,'ok':True}
+
+@app.delete('/api/saved/{nid}')
+def delete_note(nid:int,u=Depends(current_user)):
+ with db() as c:
+  cur=c.execute('DELETE FROM saved_notes WHERE id=? AND owner=?',(nid,u['id']))
+  if not cur.rowcount:raise HTTPException(404,'Not found')
+ return {'ok':True}
+
+class LanguagePreference(BaseModel):
+ language:Literal['uz','en','ru','tr','kk','ar','zh-CN','hi','es','fr']
+
+@app.patch('/api/preferences/language')
+def language_preference(x:LanguagePreference,u=Depends(current_user)):
+ with db() as c:c.execute('UPDATE users SET language=? WHERE id=?',(x.language,u['id']))
+ return {'ok':True}
+
+@app.get('/api/account/export')
+def export_account(u=Depends(current_user)):
+ rate_limit('export:'+str(u['id']),3,3600)
+ with db() as c:
+  data={'format':'tona-account-export-v1','exported_at':now(),'account':u,
+   'messages':[dict(r) for r in c.execute('SELECT * FROM messages WHERE sender=? OR recipient=? ORDER BY id',(u['id'],u['id']))],
+   'saved_notes':[dict(r) for r in c.execute('SELECT id,body,created,updated FROM saved_notes WHERE owner=? ORDER BY id',(u['id'],))],
+   'contacts':[dict(r) for r in c.execute('SELECT a,b,status,requester FROM friendships WHERE a=? OR b=?',(u['id'],u['id']))],
+   'posts':[dict(r) for r in c.execute('SELECT id,kind,media_url,caption,created,expires FROM posts WHERE user_id=?',(u['id'],))],
+   'reports':[dict(r) for r in c.execute('SELECT id,category,details,status,created FROM reports WHERE reporter=?',(u['id'],))]}
+ return JSONResponse(data,headers={'Content-Disposition':f'attachment; filename="tona-account-{u["id"]}.json"','Cache-Control':'no-store'})
+
+
+@app.post('/api/messages/media/{other}')
+async def send_chat_media(other:int,file:UploadFile=File(...),kind:Literal['video','audio','round','gif']=Form(...),u=Depends(current_user)):
+ rate_limit('chatmedia:'+str(u['id']),30,3600)
+ with db() as c:
+  if not is_friend(c,u['id'],other):raise HTTPException(403,'Only accepted friends can chat')
+ with db() as c:
+  if c.execute("SELECT count(*) FROM messages WHERE sender=? AND attachment!=''",(u['id'],)).fetchone()[0]>=100:raise HTTPException(429,'Media storage limit')
+ formats={'video/mp4':'.mp4','video/webm':'.webm','audio/webm':'.webm','audio/ogg':'.ogg','audio/mpeg':'.mp3','audio/mp4':'.m4a','audio/wav':'.wav','audio/x-wav':'.wav','image/gif':'.gif'}
+ mime=(file.content_type or '').split(';')[0]
+ if mime not in formats or (kind=='gif' and mime!='image/gif') or (kind in ('video','round') and not mime.startswith('video/')) or (kind=='audio' and not mime.startswith('audio/')):raise HTTPException(415,'Unsupported media format')
+ data=await file.read(25*1024*1024+1)
+ if len(data)>25*1024*1024:raise HTTPException(413,'25 MB upload limit')
+ ext=formats[mime];head=data[:32]
+ valid={'.mp4':head[4:8]==b'ftyp','.m4a':head[4:8]==b'ftyp','.webm':head.startswith(bytes.fromhex('1a45dfa3')),'.ogg':head.startswith(b'OggS'),'.mp3':head.startswith(b'ID3') or (len(head)>1 and head[0]==255 and head[1]&224==224),'.wav':head[:4]==b'RIFF' and head[8:12]==b'WAVE','.gif':head[:6] in (b'GIF87a',b'GIF89a')}.get(ext,False)
+ if not valid:raise HTTPException(415,'Unsupported media format')
+ filename=secrets.token_hex(18)+ext;path=MEDIA/filename
+ try:
+  path.write_bytes(data)
+  if ext=='.gif':
+   with Image.open(path) as im:
+    if im.width*im.height>16000000 or getattr(im,'n_frames',1)>500:raise ValueError()
+    im.verify()
+  with db() as c:
+   if not is_friend(c,u['id'],other):raise HTTPException(403,'Only accepted friends can chat')
+   cur=c.execute('INSERT INTO messages(sender,recipient,body,created,attachment,attachment_kind) VALUES(?,?,?,?,?,?)',(u['id'],other,'',now(),filename,kind))
+   msg=dict(c.execute('SELECT * FROM messages WHERE id=?',(cur.lastrowid,)).fetchone())
+ except HTTPException:
+  path.unlink(missing_ok=True);raise
+ except Exception:
+  path.unlink(missing_ok=True);raise HTTPException(415,'Unsupported media format')
+ await broadcast(other,{'type':'message','message':msg});await broadcast(u['id'],{'type':'message','message':msg})
+ return msg
+
+@app.get('/api/messages/media/file/{mid}')
+def chat_media_file(mid:int,u=Depends(current_user)):
+ with db() as c:
+  m=c.execute('SELECT * FROM messages WHERE id=? AND deleted_at IS NULL',(mid,)).fetchone()
+  if not m or u['id'] not in (m['sender'],m['recipient']) or not is_friend(c,m['sender'],m['recipient']) or not m['attachment']:raise HTTPException(404,'Message unavailable')
+  path=MEDIA/m['attachment']
+  if not path.is_file():raise HTTPException(404,'Message unavailable')
+ return FileResponse(path,headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
+
+
+@app.get('/manifest.webmanifest')
+def install_manifest():return FileResponse((BASE/'pwa' if (BASE/'pwa').is_dir() else BASE)/'manifest.webmanifest',media_type='application/manifest+json',headers={'Cache-Control':'no-cache'})
+
+@app.get('/sw.js')
+def install_worker():return FileResponse((BASE/'pwa' if (BASE/'pwa').is_dir() else BASE)/'sw.js',media_type='application/javascript',headers={'Cache-Control':'no-cache','Service-Worker-Allowed':'/'})
+
+@app.get('/install')
+def installation_page():return FileResponse((BASE/'pwa' if (BASE/'pwa').is_dir() else BASE)/'install.html',headers={'Cache-Control':'no-cache'})
+
+@app.get('/pwa/{asset}')
+def installation_asset(asset:str):
+ if asset not in {'icon-180.png','icon-192.png','icon-512.png','install.js','install.css'}:raise HTTPException(404)
+ return FileResponse((BASE/'pwa' if (BASE/'pwa').is_dir() else BASE)/asset,headers={'Cache-Control':'no-cache'})

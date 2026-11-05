@@ -156,5 +156,5 @@ def test_global_phone_formats_and_multilingual_messages():
  assert client.get(f'/api/messages/{ai}',headers=hb).json()[0]['body']==body
  r=client.get('/i18n.js')
  assert r.status_code==200 and 'javascript' in r.headers['content-type']
- assert '<script src="/i18n.js?v=0.4.1" defer>' in client.get('/').text
+ assert '<script src="/i18n.js?v=0.6.0" defer>' in client.get('/').text
  assert client.get('/app.js').headers['cache-control']=='no-cache, must-revalidate'
