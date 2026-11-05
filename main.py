@@ -19,7 +19,7 @@ DATA=Path(os.getenv('TONA_DATA_DIR',str(BASE/'data'))); DATA.mkdir(parents=True,
 MEDIA=DATA/'media'; MEDIA.mkdir(exist_ok=True)
 DB=DATA/'tona.db'
 REQUIRE_VERIFICATION=os.getenv('TONA_REQUIRE_VERIFICATION','false').lower()=='true'
-app=FastAPI(title='TONA Global API',version='0.3.0')
+app=FastAPI(title='TONA Global API',version='0.4.0')
 
 
 @contextmanager
@@ -48,7 +48,7 @@ with db() as c:
   'display_name':"TEXT NOT NULL DEFAULT ''",'bio':"TEXT NOT NULL DEFAULT ''",
   'avatar':"TEXT NOT NULL DEFAULT ''",'avatar_visibility':"TEXT NOT NULL DEFAULT 'contacts'",
   'discoverable':"INTEGER NOT NULL DEFAULT 1",'allow_requests':"INTEGER NOT NULL DEFAULT 1",
-  'theme':"TEXT NOT NULL DEFAULT 'light'",'font_size':"TEXT NOT NULL DEFAULT 'normal'",
+  'theme':"TEXT NOT NULL DEFAULT 'dark'",'font_size':"TEXT NOT NULL DEFAULT 'normal'",
   'is_moderator':"INTEGER NOT NULL DEFAULT 0",'banned':"INTEGER NOT NULL DEFAULT 0",'ban_reason':"TEXT NOT NULL DEFAULT ''"
  }.items():
   if name not in columns:c.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
@@ -99,7 +99,7 @@ def rate_limit(bucket, limit, window):
 def normalize_contact(value):
  value=value.strip().lower()
  if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',value) or re.fullmatch(r'\+[1-9]\d{7,14}',value):return value
- raise HTTPException(400,'Email yoki xalqaro telefon raqamini kiriting: +998...')
+ raise HTTPException(400,'Email yoki xalqaro telefon raqamini kiriting: +1...')
 def twilio(action, contact, code=None):
  sid=os.getenv('TWILIO_ACCOUNT_SID');secret=os.getenv('TWILIO_AUTH_TOKEN');service=os.getenv('TWILIO_VERIFY_SERVICE_SID')
  if not all((sid,secret,service)):raise HTTPException(503,'SMS tasdiqlash xizmati hali sozlanmagan.')
@@ -192,6 +192,9 @@ class Post(BaseModel): kind:str;media_url:str=Field(max_length=500);caption:str=
 
 @app.get('/static/tona-logo.png')
 def logo():return FileResponse(BASE/'tona-logo.png')
+
+@app.get('/i18n.js')
+def translations():return FileResponse(BASE/'i18n.js',media_type='application/javascript')
 
 @app.get('/app.js')
 def script():return FileResponse(BASE/'app.js',media_type='application/javascript')

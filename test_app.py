@@ -140,3 +140,20 @@ def test_moderated_post_is_hidden_and_report_evidence_access():
  assert client.get(media,headers=hu).status_code==404
  assert client.get(media,headers=ho).status_code==404
  assert all(p['id']!=post for p in client.get('/api/feed',headers=ho).json())
+
+def test_global_phone_formats_and_multilingual_messages():
+ # Each scenario gets an independent registration quota in the temporary test DB.
+ with main.db() as c:c.execute("DELETE FROM rate_limits WHERE bucket='register:testclient'")
+ for phone in ['+12025550123','+442079460123','+919876543210','+819012345678','+998901234567']:
+  assert main.normalize_contact(phone)==phone
+ a,ha=register('global_a');b,hb=register('global_b')
+ ai=a['user']['id'];bi=b['user']['id']
+ assert client.get('/api/me',headers=ha).json()['theme']=='dark'
+ assert client.post('/api/friends/request',headers=ha,json={'user_id':bi}).status_code==200
+ assert client.post(f'/api/friends/{ai}/accept',headers=hb).status_code==200
+ body='Salom · Hello · Привет · مرحبًا · 你好 · नमस्ते 🌍'
+ assert client.post('/api/messages',headers=ha,json={'recipient':bi,'body':body}).status_code==200
+ assert client.get(f'/api/messages/{ai}',headers=hb).json()[0]['body']==body
+ r=client.get('/i18n.js')
+ assert r.status_code==200 and 'javascript' in r.headers['content-type']
+ assert '<script src="/i18n.js" defer>' in client.get('/').text

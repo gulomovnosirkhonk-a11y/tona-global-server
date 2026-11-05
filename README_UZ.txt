@@ -1,4 +1,4 @@
-TONA 0.3 — profil, hikoyalar, maxfiylik va moderatsiya
+TONA 0.4 — profil, hikoyalar, maxfiylik va moderatsiya
 
 Ishga tushirish:
 Python 3.12; pip install -r requirements.txt
@@ -41,7 +41,7 @@ SMTP_PORT=587, SMTP_FROM, SMTP_USER, SMTP_PASSWORD va Twilio Verify uchun
 TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID.
 
 Sinov: pip install pytest httpx; python -m pytest test_app.py -q
-7 ta integratsion test: chat, media ruxsatlari, profil, cookie/CSRF,
+8 ta integratsion test: chat, media ruxsatlari, profil, cookie/CSRF,
 seanslar, parol, bloklash, hikoya muddati va moderatsiya.
 Mahalliy demo akkauntlari deploy paketiga kiritilmagan.
 
@@ -49,3 +49,19 @@ Cheklovlar: end-to-end shifrlash, audio/videoqo‘ng‘iroqlar, guruhlar,
 avtomatik terrorizm/jinoyat aniqlash, doimiy navbatchi moderatsiya, parolni
 unutganda tiklash, store ilovalari va professional audit hali yo‘q.
 Noqonuniy faoliyatning butunlay bo‘lmasligi kafolatlanmaydi.
+
+0.4 yangilanishi — global interfeys va TONA Night dizayni
+10 til: o‘zbek, ingliz, rus, turk, qozoq, arab, xitoy, hind, ispan, fransuz.
+Til dastlab brauzer tilidan olinadi; tanlov shu brauzerda localStorage’da saqlanadi.
+Arabcha RTL; xabar va bio matni o‘z yo‘nalishini aniqlaydi. Sana/vaqt locale bo‘yicha.
+Tarjimalar i18n.js ichida saqlanadi. Ilova ishlayotganda tarjima API’siga
+murojaat qilmaydi, shaxsiy xabarlarni tarjima xizmatiga yubormaydi.
+Tarjimalar dastlab avtomatik tayyorlangan; asosiy inglizcha atamalar tahrir qilingan.
+Rasmiy keng ko‘lamli chiqarish oldidan har bir tilda ona-tili muharriri tekshiruvi tavsiya etiladi.
+
+Foydalanuvchi namunasiga mos qora/binafsha ranglar, gradient tugmalar, story
+halqalari, do‘stlar lentasi, pastki mobil menyu va profil media galereyasi.
+Yangi akkauntlar dark rejimida boshlanadi, mavjud light/dark tanlovi saqlanadi.
+Asosiy sahifa faqat haqiqiy kontakt postlarini ko‘rsatadi, namuna kontaktlar
+va rasmlar ommaviy bazaga qo‘shilmaydi. Qo‘ng‘iroq va E2EE belgilarini qo‘shmadik:
+ushbu funksiyalar hali mavjud emas.
