@@ -87,6 +87,7 @@ async def security_headers(request,call_next):
  response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
  response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
  if request.url.path.startswith(('/api/','/media/')):response.headers['Cache-Control']='no-store'
+ elif request.url.path in ('/','/app.js','/i18n.js','/style.css'):response.headers['Cache-Control']='no-cache, must-revalidate'
  return response
 
 def now():return int(time.time())
