@@ -19,6 +19,7 @@ BASE=Path(__file__).resolve().parent
 DATA=Path(os.getenv('TONA_DATA_DIR',str(BASE/'data'))); DATA.mkdir(parents=True,exist_ok=True)
 MEDIA=DATA/'media'; MEDIA.mkdir(exist_ok=True)
 DB=DATA/'tona.db'
+PHONE_LOGIN=os.getenv('TONA_PHONE_LOGIN','true').lower()=='true'
 REQUIRE_VERIFICATION=os.getenv('TONA_REQUIRE_VERIFICATION','false').lower()=='true'
 app=FastAPI(title='TONA Global API',version='0.6.0')
 
@@ -122,29 +123,39 @@ def request_code(x:VerificationRequest,request:Request):
  if contact.startswith('+'):
   twilio('Verifications',contact)
  else:
-  host=os.getenv('SMTP_HOST');sender=os.getenv('SMTP_FROM')
-  if not host or not sender:raise HTTPException(503,'Email tasdiqlash xizmati hali sozlanmagan.')
+  host=os.getenv('SMTP_HOST');sender=os.getenv('EMAIL_FROM') or os.getenv('SMTP_FROM');api_key=os.getenv('RESEND_API_KEY')
+  if not (host or api_key) or not sender:raise HTTPException(503,'Email tasdiqlash xizmati hali sozlanmagan.')
   code=str(secrets.randbelow(1000000)).zfill(6)
   with db() as c:c.execute('INSERT OR REPLACE INTO verification VALUES(?,?,?,0)',(contact,hashlib.sha256(code.encode()).hexdigest(),now()+600))
   msg=EmailMessage();msg['From']=sender;msg['To']=contact;msg['Subject']='TONA — tasdiqlash kodi';msg.set_content('TONA tasdiqlash kodi: '+code+'\nKod 10 daqiqa amal qiladi.')
   try:
-   with smtplib.SMTP(host,int(os.getenv('SMTP_PORT','587')),timeout=15) as smtp:
-    smtp.starttls(context=ssl.create_default_context())
-    if os.getenv('SMTP_USER'):smtp.login(os.environ['SMTP_USER'],os.environ['SMTP_PASSWORD'])
-    smtp.send_message(msg)
-  except Exception:raise HTTPException(502,'Email yuborilmadi. Keyinroq qayta urinib ko‘ring.')
+   if api_key:
+    payload={'from':sender,'to':[contact],'subject':str(msg['Subject']),'text':msg.get_content()}
+    req=urllib.request.Request('https://api.resend.com/emails',data=json.dumps(payload).encode(),headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json','User-Agent':'TONA/0.6'})
+    with urllib.request.urlopen(req,timeout=15) as result:
+     if not json.load(result).get('id'):raise ValueError('Mail provider rejected request')
+   else:
+    with smtplib.SMTP(host,int(os.getenv('SMTP_PORT','587')),timeout=15) as smtp:
+     smtp.starttls(context=ssl.create_default_context())
+     if os.getenv('SMTP_USER'):smtp.login(os.environ['SMTP_USER'],os.environ['SMTP_PASSWORD'])
+     smtp.send_message(msg)
+  except Exception:
+   with db() as c:c.execute('DELETE FROM verification WHERE contact=? AND digest=?',(contact,hashlib.sha256(code.encode()).hexdigest()))
+   raise HTTPException(502,'Email yuborilmadi. Keyinroq qayta urinib ko‘ring.')
  return {'ok':True}
 def verify_code(contact,code):
  if contact.startswith('+'):
   if twilio('VerificationCheck',contact,code).get('status')!='approved':raise HTTPException(400,'Tasdiqlash kodi noto‘g‘ri yoki muddati tugagan.')
  else:
   with db() as c:
+   c.execute('BEGIN IMMEDIATE')
    row=c.execute('SELECT * FROM verification WHERE contact=?',(contact,)).fetchone()
-   c.execute('UPDATE verification SET attempts=attempts+1 WHERE contact=?',(contact,))
-  if not row or row['expires']<=now() or row['attempts']>=5 or not hmac.compare_digest(row['digest'],hashlib.sha256(code.encode()).hexdigest()):raise HTTPException(400,'Tasdiqlash kodi noto‘g‘ri yoki muddati tugagan.')
-  with db() as c:c.execute('DELETE FROM verification WHERE contact=?',(contact,))
+   valid=bool(row and row['expires']>now() and row['attempts']<5 and hmac.compare_digest(row['digest'],hashlib.sha256(code.encode()).hexdigest()))
+   if valid:c.execute('DELETE FROM verification WHERE contact=?',(contact,))
+   else:c.execute('UPDATE verification SET attempts=attempts+1 WHERE contact=?',(contact,))
+  if not valid:raise HTTPException(400,'Tasdiqlash kodi noto‘g‘ri yoki muddati tugagan.')
 @app.get('/api/config')
-def config():return {'verification_required':REQUIRE_VERIFICATION,'moderation_active':bool(admin_ids()),'owner_setup_available':len(os.getenv('TONA_OWNER_KEY',''))>=32,'owner_username':os.getenv('TONA_OWNER_USERNAME','nosirkhon'),'ephemeral':os.getenv('TONA_EPHEMERAL','true')=='true'}
+def config():return {'email_login':True,'email_ready':bool((os.getenv('RESEND_API_KEY') or os.getenv('SMTP_HOST')) and (os.getenv('EMAIL_FROM') or os.getenv('SMTP_FROM'))),'phone_login':PHONE_LOGIN,'sms_ready':all(os.getenv(k) for k in ('TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_VERIFY_SERVICE_SID')),'verification_required':REQUIRE_VERIFICATION,'moderation_active':bool(admin_ids()),'owner_setup_available':len(os.getenv('TONA_OWNER_KEY',''))>=32,'owner_username':os.getenv('TONA_OWNER_USERNAME','nosirkhon'),'ephemeral':os.getenv('TONA_EPHEMERAL','true')=='true'}
 @app.get('/healthz')
 def health():
  with db() as c:c.execute('SELECT 1')
@@ -212,6 +223,7 @@ def stylesheet():return FileResponse(BASE/'style.css',media_type='text/css')
 def home():return FileResponse(BASE/'index.html')
 @app.post('/api/register')
 def register(x:Auth,request:Request,response:Response):
+ if PHONE_LOGIN:raise HTTPException(403,"Telefon va SMS kod orqali ro‘yxatdan o‘ting")
  rate_limit("register:"+request.client.host,10,3600)
  username=x.username.strip();contact=x.contact.strip().lower()
  if not re.fullmatch(r'[a-zA-Z0-9_]{3,32}',username):raise HTTPException(400,'Username: letters, digits, underscore')
@@ -242,7 +254,11 @@ def logout(request:Request,response:Response,u=Depends(current_user),authorizati
  response.delete_cookie('tona_session',path='/')
  return {'ok':True}
 @app.get('/api/me')
-def me(u=Depends(current_user)):return u
+def me(u=Depends(current_user)):
+ with db() as c:
+  phone=c.execute('SELECT phone FROM verified_phones WHERE user_id=?',(u['id'],)).fetchone()
+  email=c.execute('SELECT email FROM account_emails WHERE user_id=?',(u['id'],)).fetchone()
+ return {**u,'verified_phone':phone['phone'] if phone else '', 'verified_email':email['email'] if email else ''}
 @app.get('/api/users')
 def users(q:str='',u=Depends(current_user)):
  with db() as c:
@@ -283,7 +299,15 @@ def history(other:int,q:str=Query(default='',max_length=200),before:int|None=Que
  with db() as c:
   if not is_friend(c,u['id'],other):raise HTTPException(403,'Only accepted friends can chat')
   rows=c.execute("""SELECT * FROM (SELECT * FROM messages WHERE ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) AND (? IS NULL OR id<?) AND (?='' OR (deleted_at IS NULL AND instr(lower(body),lower(?))>0)) ORDER BY id DESC LIMIT ?) ORDER BY id ASC""",(u['id'],other,other,u['id'],before,before,q,q,limit)).fetchall()
- return [dict(r) for r in rows]
+ with db() as c:return [private_receipt(c,dict(r)) for r in rows]
+
+def receipts_allowed(c,a,b):
+ return not c.execute('SELECT 1 FROM users WHERE id IN (?,?) AND read_receipts=0',(a,b)).fetchone()
+
+def private_receipt(c,message):
+ if not receipts_allowed(c,message['sender'],message['recipient']):message={**message,'read_at':None}
+ return message
+
 connections={}
 async def broadcast(uid,event):
  for ws in list(connections.get(uid,set())):
@@ -291,7 +315,11 @@ async def broadcast(uid,event):
    with db() as c:valid=c.execute('SELECT 1 FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires>? AND users.banned=0',(ws.state.token_hash,now())).fetchone()
    if not valid:
     await ws.close(code=1008);connections.get(uid,set()).discard(ws);continue
-   await ws.send_json(event)
+   with db() as c:
+    outgoing=event
+    if event.get('type')=='read' and not receipts_allowed(c,uid,event['reader']):continue
+    if event.get('type')=='message':outgoing={**event,'message':private_receipt(c,event['message'])}
+   await ws.send_json(outgoing)
   except Exception:connections.get(uid,set()).discard(ws)
 @app.post('/api/messages')
 async def send(x:Message,u=Depends(current_user)):
@@ -305,7 +333,7 @@ async def send(x:Message,u=Depends(current_user)):
   cur=c.execute('INSERT INTO messages(sender,recipient,body,created,reply_to) VALUES(?,?,?,?,?)',(u['id'],x.recipient,x.body,now(),x.reply_to))
   msg=dict(c.execute('SELECT * FROM messages WHERE id=?',(cur.lastrowid,)).fetchone())
  await broadcast(x.recipient,{'type':'message','message':msg});await broadcast(u['id'],{'type':'message','message':msg})
- return msg
+ with db() as c:return private_receipt(c,msg)
 @app.websocket('/ws')
 async def websocket(ws:WebSocket):
  origin=ws.headers.get('origin')
@@ -416,6 +444,7 @@ def normalize_image(path,avatar=False):
    im.save(path,format='JPEG' if avatar or path.suffix=='.jpg' else 'PNG' if path.suffix=='.png' else 'WEBP')
 
 class ProfileUpdate(BaseModel):
+ username:str|None=Field(default=None,min_length=3,max_length=32)
  display_name:str=Field(default='',max_length=60)
  bio:str=Field(default='',max_length=160)
 class SettingsUpdate(BaseModel):
@@ -423,6 +452,7 @@ class SettingsUpdate(BaseModel):
  bio_visibility:Literal['everyone','contacts','nobody']='everyone'
  discoverable:bool=True
  allow_requests:bool=True
+ read_receipts:bool=True
  theme:Literal['light','dark']='light'
  font_size:Literal['normal','large']='normal'
 class PasswordUpdate(BaseModel):
@@ -431,7 +461,12 @@ class PasswordUpdate(BaseModel):
 
 @app.patch('/api/profile')
 def update_profile(x:ProfileUpdate,u=Depends(current_user)):
- with db() as c:c.execute('UPDATE users SET display_name=?,bio=? WHERE id=?',(x.display_name.strip(),x.bio.strip(),u['id']))
+ if x.username is not None and not re.fullmatch(r'[a-zA-Z0-9_]{3,32}',x.username):raise HTTPException(400,'Username: letters, digits, underscore')
+ with db() as c:
+  try:
+   if x.username is not None:c.execute('UPDATE users SET username=? WHERE id=?',(x.username,u['id']))
+   c.execute('UPDATE users SET display_name=?,bio=? WHERE id=?',(x.display_name.strip(),x.bio.strip(),u['id']))
+  except sqlite3.IntegrityError:raise HTTPException(409,'Username band')
  return {'ok':True}
 @app.get('/api/profile/{uid}')
 def profile(uid:int,u=Depends(current_user)):
@@ -602,7 +637,7 @@ async def edit_message(mid:int,x:MessageEdit,u=Depends(current_user)):
   c.execute('UPDATE messages SET body=?,edited_at=? WHERE id=?',(x.body,now(),mid))
   result=dict(c.execute('SELECT * FROM messages WHERE id=?',(mid,)).fetchone())
  for uid in (result['sender'],result['recipient']):await broadcast(uid,{'type':'message','message':result})
- return result
+ with db() as c:return private_receipt(c,result)
 
 @app.delete('/api/messages/item/{mid}')
 async def delete_message(mid:int,u=Depends(current_user)):
@@ -624,6 +659,7 @@ async def read_messages(other:int,x:ReadMessages,u=Depends(current_user)):
   if not is_friend(c,u['id'],other):raise HTTPException(403,'Only accepted friends can chat')
   seen=c.execute('SELECT 1 FROM messages WHERE id=? AND sender=? AND recipient=?',(x.through_id,other,u['id'])).fetchone()
   if not seen:raise HTTPException(404,'Message unavailable')
+  if not receipts_allowed(c,u['id'],other):return {'ok':True}
   stamp=now();changed=c.execute('UPDATE messages SET read_at=? WHERE sender=? AND recipient=? AND id<=? AND read_at IS NULL AND deleted_at IS NULL',(stamp,other,u['id'],x.through_id)).rowcount
  if changed:await broadcast(other,{'type':'read','reader':u['id'],'read_at':stamp})
  return {'ok':True}
@@ -659,12 +695,13 @@ def language_preference(x:LanguagePreference,u=Depends(current_user)):
 def export_account(u=Depends(current_user)):
  rate_limit('export:'+str(u['id']),3,3600)
  with db() as c:
-  data={'format':'tona-account-export-v1','exported_at':now(),'account':u,
+  data={'format':'tona-account-export-v1','exported_at':now(),'account':me(u),
    'messages':[dict(r) for r in c.execute('SELECT * FROM messages WHERE sender=? OR recipient=? ORDER BY id',(u['id'],u['id']))],
    'saved_notes':[dict(r) for r in c.execute('SELECT id,body,created,updated FROM saved_notes WHERE owner=? ORDER BY id',(u['id'],))],
    'contacts':[dict(r) for r in c.execute('SELECT a,b,status,requester FROM friendships WHERE a=? OR b=?',(u['id'],u['id']))],
    'posts':[dict(r) for r in c.execute('SELECT id,kind,media_url,caption,created,expires FROM posts WHERE user_id=?',(u['id'],))],
    'reports':[dict(r) for r in c.execute('SELECT id,category,details,status,created FROM reports WHERE reporter=?',(u['id'],))]}
+ with db() as c:data['messages']=[private_receipt(c,m) for m in data['messages']]
  return JSONResponse(data,headers={'Content-Disposition':f'attachment; filename="tona-account-{u["id"]}.json"','Cache-Control':'no-store'})
 
 
@@ -699,7 +736,7 @@ async def send_chat_media(other:int,file:UploadFile=File(...),kind:Literal['vide
  except Exception:
   path.unlink(missing_ok=True);raise HTTPException(415,'Unsupported media format')
  await broadcast(other,{'type':'message','message':msg});await broadcast(u['id'],{'type':'message','message':msg})
- return msg
+ with db() as c:return private_receipt(c,msg)
 
 @app.get('/api/messages/media/file/{mid}')
 def chat_media_file(mid:int,u=Depends(current_user)):
@@ -724,3 +761,106 @@ def installation_page():return FileResponse((BASE/'pwa' if (BASE/'pwa').is_dir()
 def installation_asset(asset:str):
  if asset not in {'icon-180.png','icon-192.png','icon-512.png','install.js','install.css'}:raise HTTPException(404)
  return FileResponse((BASE/'pwa' if (BASE/'pwa').is_dir() else BASE)/asset,headers={'Cache-Control':'no-cache'})
+
+
+class PhoneCode(BaseModel):
+ phone:str=Field(max_length=25)
+ code:str=Field(pattern=r'^[0-9]{6}$')
+
+def normalized_phone(value):
+ value=re.sub(r'[\s()-]','',value)
+ if not re.fullmatch(r'\+[1-9]\d{7,14}',value):raise HTTPException(400,'Xalqaro telefon raqamini kiriting: +998...')
+ return value
+
+@app.post('/api/auth/phone/request')
+def request_phone_code(x:VerificationRequest,request:Request):
+ return request_code(VerificationRequest(contact=normalized_phone(x.contact)),request)
+
+@app.post('/api/auth/phone/verify')
+def phone_login(x:PhoneCode,request:Request,response:Response):
+ phone=normalized_phone(x.phone)
+ rate_limit('phone-login-ip:'+request.client.host,30,600)
+ rate_limit('phone-login:'+phone,5,600)
+ verify_code(phone,x.code)
+ with db() as c:
+  identity=c.execute('SELECT users.* FROM verified_phones JOIN users ON users.id=verified_phones.user_id WHERE phone=?',(phone,)).fetchone()
+  if identity:
+   if identity['banned']:raise HTTPException(403,'Akkaunt cheklangan')
+   uid=identity['id']
+  else:
+   # Never attach an unverified legacy phone account just because its text matches.
+   if c.execute('SELECT 1 FROM users WHERE contact=?',(phone,)).fetchone():raise HTTPException(409,'Eski akkauntga parol bilan kiring va Sozlamalarda telefonni tasdiqlang.')
+   try:
+    cur=c.execute('INSERT INTO users(username,contact,password_hash,created) VALUES(?,?,?,?)',('tona_'+secrets.token_hex(6),phone,'!',now()))
+    uid=cur.lastrowid
+    c.execute('INSERT INTO verified_phones VALUES(?,?,?)',(phone,uid,now()))
+   except sqlite3.IntegrityError:raise HTTPException(409,'Qayta urinib ko‘ring')
+  token=issue_token(c,uid)
+ set_session(response,request,token)
+ return {'ok':True}
+
+@app.post('/api/account/phone/verify')
+def link_legacy_phone(x:PhoneCode,request:Request,u=Depends(current_user)):
+ phone=normalized_phone(x.phone)
+ if phone!=u['contact']:raise HTTPException(400,'Faqat akkauntingizdagi eski telefonni tasdiqlang')
+ rate_limit('phone-link:'+str(u['id']),5,600)
+ verify_code(phone,x.code)
+ with db() as c:
+  try:c.execute('INSERT INTO verified_phones VALUES(?,?,?)',(phone,u['id'],now()))
+  except sqlite3.IntegrityError:raise HTTPException(409,'Telefon allaqachon ulangan')
+ return {'ok':True}
+
+@app.post('/api/account/email/request')
+def request_account_email(x:VerificationRequest,request:Request,u=Depends(current_user)):
+ email=normalize_contact(x.contact)
+ if email.startswith('+'):raise HTTPException(400,'Email manzilini kiriting')
+ rate_limit('email-link:'+str(u['id']),5,3600)
+ result=request_code(VerificationRequest(contact=email),request)
+ with db() as c:c.execute('INSERT OR REPLACE INTO pending_emails VALUES(?,?,?)',(u['id'],email,now()))
+ return result
+
+class EmailCode(BaseModel):
+ code:str=Field(pattern=r'^[0-9]{6}$')
+@app.post('/api/account/email/verify')
+def link_account_email(x:EmailCode,u=Depends(current_user)):
+ rate_limit('email-check:'+str(u['id']),5,600)
+ with db() as c:pending=c.execute('SELECT * FROM pending_emails WHERE user_id=?',(u['id'],)).fetchone()
+ if not pending or pending['created']<now()-600:raise HTTPException(400,'Avval email kodini so‘rang')
+ verify_code(pending['email'],x.code)
+ with db() as c:
+  try:c.execute('INSERT INTO account_emails VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET email=excluded.email,verified_at=excluded.verified_at',(u['id'],pending['email'],now()))
+  except sqlite3.IntegrityError:raise HTTPException(409,'Email boshqa akkauntga ulangan')
+  c.execute('DELETE FROM pending_emails WHERE user_id=?',(u['id'],))
+ return {'ok':True}
+
+class EmailLoginCode(BaseModel):
+ email:str=Field(max_length=254)
+ code:str=Field(pattern=r'^[0-9]{6}$')
+
+@app.post('/api/auth/email/request')
+def request_email_login(x:VerificationRequest,request:Request):
+ email=normalize_contact(x.contact)
+ if email.startswith('+'):raise HTTPException(400,'Email manzilini kiriting')
+ return request_code(VerificationRequest(contact=email),request)
+
+@app.post('/api/auth/email/verify')
+def email_login(x:EmailLoginCode,request:Request,response:Response):
+ email=normalize_contact(x.email)
+ if email.startswith('+'):raise HTTPException(400,'Email manzilini kiriting')
+ rate_limit('email-login-ip:'+request.client.host,30,600)
+ rate_limit('email-login:'+email,5,600)
+ verify_code(email,x.code)
+ with db() as c:
+  identity=c.execute('SELECT users.* FROM account_emails JOIN users ON users.id=account_emails.user_id WHERE email=?',(email,)).fetchone()
+  if identity:
+   if identity['banned']:raise HTTPException(403,'Akkaunt cheklangan')
+   uid=identity['id']
+  else:
+   if c.execute('SELECT 1 FROM users WHERE contact=?',(email,)).fetchone():raise HTTPException(409,'Eski akkauntga parol bilan kiring va profil ichida emailni tasdiqlang.')
+   try:
+    cur=c.execute('INSERT INTO users(username,contact,password_hash,created) VALUES(?,?,?,?)',('tona_'+secrets.token_hex(6),email,'!',now()))
+    uid=cur.lastrowid;c.execute('INSERT INTO account_emails VALUES(?,?,?)',(uid,email,now()))
+   except sqlite3.IntegrityError:raise HTTPException(409,'Qayta urinib ko‘ring')
+  token=issue_token(c,uid)
+ set_session(response,request,token)
+ return {'ok':True}

@@ -1,4 +1,5 @@
 import os,tempfile,hashlib
+os.environ['TONA_PHONE_LOGIN']='false'
 os.environ['TONA_DATA_DIR']=tempfile.mkdtemp(prefix='tona-test-')
 from fastapi.testclient import TestClient
 import main

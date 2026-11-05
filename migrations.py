@@ -21,10 +21,27 @@ def migrate(path):
  with sqlite3.connect(Path(path)) as c:upgrade(c)
 
 
-def upgrade(connection):
+def upgrade_media(connection):
  upgrade_base(connection)
  if connection.execute('SELECT 1 FROM schema_migrations WHERE version=2').fetchone():return
  existing={row[1] for row in connection.execute('PRAGMA table_info(messages)')}
  for name in ('attachment','attachment_kind'):
   if name not in existing:connection.execute(f"ALTER TABLE messages ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
  connection.execute('INSERT INTO schema_migrations(version) VALUES(2)')
+
+
+def upgrade_identity(connection):
+ upgrade_media(connection)
+ if connection.execute('SELECT 1 FROM schema_migrations WHERE version=3').fetchone():return
+ connection.execute('CREATE TABLE IF NOT EXISTS verified_phones(phone TEXT PRIMARY KEY,user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),verified_at INTEGER NOT NULL)')
+ connection.execute('CREATE TABLE IF NOT EXISTS account_emails(user_id INTEGER PRIMARY KEY REFERENCES users(id),email TEXT NOT NULL UNIQUE,verified_at INTEGER NOT NULL)')
+ connection.execute('CREATE TABLE IF NOT EXISTS pending_emails(user_id INTEGER PRIMARY KEY REFERENCES users(id),email TEXT NOT NULL,created INTEGER NOT NULL)')
+ connection.execute('INSERT INTO schema_migrations(version) VALUES(3)')
+
+
+def upgrade(connection):
+ upgrade_identity(connection)
+ if connection.execute('SELECT 1 FROM schema_migrations WHERE version=4').fetchone():return
+ columns={r[1] for r in connection.execute('PRAGMA table_info(users)')}
+ if 'read_receipts' not in columns:connection.execute('ALTER TABLE users ADD COLUMN read_receipts INTEGER NOT NULL DEFAULT 1')
+ connection.execute('INSERT INTO schema_migrations(version) VALUES(4)')
