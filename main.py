@@ -208,6 +208,9 @@ class Message(BaseModel):
  reply_to:int|None=Field(default=None,ge=1)
 class Post(BaseModel): kind:str;media_url:str=Field(max_length=500);caption:str=Field(default='',max_length=500)
 
+@app.get('/static/welcome-art.png')
+def welcome_art():return FileResponse(BASE/'welcome-art.png',media_type='image/png')
+
 @app.get('/static/tona-logo.png')
 def logo():return FileResponse(BASE/'tona-logo.png')
 
