@@ -105,7 +105,7 @@ def test_additive_migration_keeps_legacy_data_and_is_idempotent(tmp_path):
   upgrade(c);upgrade(c)
   assert c.execute('SELECT body FROM messages WHERE id=9').fetchone()[0]=='Keep me'
   assert c.execute('SELECT username,language,bio_visibility FROM users WHERE id=7').fetchone()==('existing','','everyone')
-  assert c.execute('SELECT count(*) FROM schema_migrations').fetchone()[0]==4
+  assert c.execute('SELECT count(*) FROM schema_migrations').fetchone()[0]==5
 
 
 def test_read_receipts_are_idempotent_and_settings_patch_preserves_values(accounts,monkeypatch):
@@ -332,3 +332,16 @@ def test_brevo_email_session_and_provider_rejection(monkeypatch):
  assert client.get('/api/me').json()['verified_email']==email
  assert client.post('/api/auth/email/request',json={'contact':email}).status_code==502
  assert client.post('/api/auth/email/verify',json={'email':email,'code':codes[-1]}).status_code==400
+
+
+def test_account_setting_panels_are_independent(accounts):
+ client,((_,first),(_,second),_)=accounts
+ values={'notify_messages':False,'preview_messages':True,'preload_media':False,
+         'reduce_motion':True,'theme':'system'}
+ assert client.patch('/api/settings',headers=first,json=values).status_code==200
+ assert client.patch('/api/settings',headers=first,json={'read_receipts':False}).status_code==200
+ own=client.get('/api/me',headers=first).json()
+ assert all(own[key]==value for key,value in values.items())
+ other=client.get('/api/me',headers=second).json()
+ assert other['notify_messages'] and other['preload_media'] and not other['preview_messages']
+ assert 'notify_messages' not in client.get('/api/friends',headers=second).json()[0]

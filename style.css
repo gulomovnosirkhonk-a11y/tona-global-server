@@ -40,3 +40,5 @@ body:not(.dark){--bg:#fff;--surface:#fff;--soft:#f1edf7;--line:#e5dced;--ink:#16
 @media(max-width:960px){.welcome{grid-template-columns:minmax(0,1fr) minmax(275px,35%)}.welcome-head{grid-area:1/1/2/3;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #43304f}.welcome-head>a{display:flex}.welcome-nav{display:none}.welcome-feed{grid-area:2/1/3/2}.welcome-access{grid-area:2/2/3/3}}
 @media(max-width:700px){.welcome{display:block;overflow:auto}.welcome-head,.welcome-feed,.welcome-access{padding:16px}.welcome-head .brand img{width:34px;height:34px}.welcome-feed h1{font-size:25px}.welcome-stories{margin:12px 0}.welcome-access{border:0;border-top:1px solid #503a60}.welcome .auth-card{margin-top:0}.welcome-post footer{flex-wrap:wrap}}
 body:has(.welcome){overflow:auto}.welcome-head>a{font-size:14px}
+
+body.reduce-motion *,body.reduce-motion *::before,body.reduce-motion *::after{animation-duration:.001ms!important;transition-duration:0s!important;scroll-behavior:auto!important}

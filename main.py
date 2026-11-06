@@ -471,7 +471,11 @@ class SettingsUpdate(BaseModel):
  discoverable:bool=True
  allow_requests:bool=True
  read_receipts:bool=True
- theme:Literal['light','dark']='light'
+ notify_messages:bool=True
+ preview_messages:bool=False
+ preload_media:bool=True
+ reduce_motion:bool=False
+ theme:Literal['light','dark','system']='light'
  font_size:Literal['normal','large']='normal'
 class PasswordUpdate(BaseModel):
  current_password:str=Field(max_length=128)

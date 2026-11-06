@@ -39,9 +39,17 @@ def upgrade_identity(connection):
  connection.execute('INSERT INTO schema_migrations(version) VALUES(3)')
 
 
-def upgrade(connection):
+def upgrade_receipts(connection):
  upgrade_identity(connection)
  if connection.execute('SELECT 1 FROM schema_migrations WHERE version=4').fetchone():return
  columns={r[1] for r in connection.execute('PRAGMA table_info(users)')}
  if 'read_receipts' not in columns:connection.execute('ALTER TABLE users ADD COLUMN read_receipts INTEGER NOT NULL DEFAULT 1')
  connection.execute('INSERT INTO schema_migrations(version) VALUES(4)')
+
+
+def upgrade(connection):
+ upgrade_receipts(connection)
+ if connection.execute('SELECT 1 FROM schema_migrations WHERE version=5').fetchone():return
+ for name,default in [('notify_messages',1),('preview_messages',0),('preload_media',1),('reduce_motion',0)]:
+  connection.execute(f'ALTER TABLE users ADD COLUMN {name} INTEGER NOT NULL DEFAULT {default}')
+ connection.execute('INSERT INTO schema_migrations(version) VALUES(5)')
