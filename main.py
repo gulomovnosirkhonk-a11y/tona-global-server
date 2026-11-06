@@ -1,6 +1,7 @@
 import os, sqlite3, secrets, hashlib, hmac, json, re, time, asyncio
 import smtplib, ssl, urllib.request, urllib.parse, urllib.error, base64
 from email.message import EmailMessage
+from email.utils import parseaddr
 from fastapi import Request, Response, Query
 from migrations import upgrade
 from fastapi.responses import JSONResponse
@@ -124,12 +125,26 @@ def request_code(x:VerificationRequest,request:Request):
   twilio('Verifications',contact)
  else:
   host=os.getenv('SMTP_HOST');sender=os.getenv('EMAIL_FROM') or os.getenv('SMTP_FROM');api_key=os.getenv('RESEND_API_KEY')
-  if not (host or api_key) or not sender:raise HTTPException(503,'Email tasdiqlash xizmati hali sozlanmagan.')
+  brevo_key=os.getenv('BREVO_API_KEY')
+  if not (host or api_key or brevo_key) or not sender:raise HTTPException(503,'Email tasdiqlash xizmati hali sozlanmagan.')
   code=str(secrets.randbelow(1000000)).zfill(6)
   with db() as c:c.execute('INSERT OR REPLACE INTO verification VALUES(?,?,?,0)',(contact,hashlib.sha256(code.encode()).hexdigest(),now()+600))
   msg=EmailMessage();msg['From']=sender;msg['To']=contact;msg['Subject']='TONA — tasdiqlash kodi';msg.set_content('TONA tasdiqlash kodi: '+code+'\nKod 10 daqiqa amal qiladi.')
   try:
-   if api_key:
+   if brevo_key:
+    sender_name,sender_address=parseaddr(sender)
+    payload={
+     'sender':{'name':sender_name or 'TONA','email':sender_address},
+     'to':[{'email':contact}],
+     'subject':str(msg['Subject']),
+     'textContent':msg.get_content()
+    }
+    req=urllib.request.Request('https://api.brevo.com/v3/smtp/email',
+     data=json.dumps(payload).encode(),
+     headers={'api-key':brevo_key,'Content-Type':'application/json','Accept':'application/json'})
+    with urllib.request.urlopen(req,timeout=15) as result:
+     if not json.load(result).get('messageId'):raise ValueError('Mail provider rejected request')
+   elif api_key:
     payload={'from':sender,'to':[contact],'subject':str(msg['Subject']),'text':msg.get_content()}
     req=urllib.request.Request('https://api.resend.com/emails',data=json.dumps(payload).encode(),headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json','User-Agent':'TONA/0.6'})
     with urllib.request.urlopen(req,timeout=15) as result:
@@ -155,7 +170,7 @@ def verify_code(contact,code):
    else:c.execute('UPDATE verification SET attempts=attempts+1 WHERE contact=?',(contact,))
   if not valid:raise HTTPException(400,'Tasdiqlash kodi noto‘g‘ri yoki muddati tugagan.')
 @app.get('/api/config')
-def config():return {'email_login':True,'email_ready':bool((os.getenv('RESEND_API_KEY') or os.getenv('SMTP_HOST')) and (os.getenv('EMAIL_FROM') or os.getenv('SMTP_FROM'))),'phone_login':PHONE_LOGIN,'sms_ready':all(os.getenv(k) for k in ('TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_VERIFY_SERVICE_SID')),'verification_required':REQUIRE_VERIFICATION,'moderation_active':bool(admin_ids()),'owner_setup_available':len(os.getenv('TONA_OWNER_KEY',''))>=32,'owner_username':os.getenv('TONA_OWNER_USERNAME','nosirkhon'),'ephemeral':os.getenv('TONA_EPHEMERAL','true')=='true'}
+def config():return {'email_login':True,'email_ready':bool((os.getenv('BREVO_API_KEY') or os.getenv('RESEND_API_KEY') or os.getenv('SMTP_HOST')) and (os.getenv('EMAIL_FROM') or os.getenv('SMTP_FROM'))),'phone_login':PHONE_LOGIN,'sms_ready':all(os.getenv(k) for k in ('TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_VERIFY_SERVICE_SID')),'verification_required':REQUIRE_VERIFICATION,'moderation_active':bool(admin_ids()),'owner_setup_available':len(os.getenv('TONA_OWNER_KEY',''))>=32,'owner_username':os.getenv('TONA_OWNER_USERNAME','nosirkhon'),'ephemeral':os.getenv('TONA_EPHEMERAL','true')=='true'}
 @app.get('/healthz')
 def health():
  with db() as c:c.execute('SELECT 1')

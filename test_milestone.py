@@ -306,3 +306,29 @@ def test_https_email_delivery_and_failure_invalidates_code(monkeypatch):
  bad='failure_'+uuid.uuid4().hex+'@example.com'
  assert c.post('/api/auth/email/request',json={'contact':bad}).status_code==502
  with main.db() as db:assert not db.execute('SELECT 1 FROM verification WHERE contact=?',(bad,)).fetchone()
+
+
+def test_brevo_email_session_and_provider_rejection(monkeypatch):
+ import io, json, uuid
+ from fastapi.testclient import TestClient
+ import main
+ client=TestClient(main.app,headers={'X-Tona-Client':'web'})
+ monkeypatch.setenv('BREVO_API_KEY','test-only')
+ monkeypatch.setenv('EMAIL_FROM','TONA <sender@example.com>')
+ email=f'{uuid.uuid4().hex}@example.com'
+ codes=[]
+ def provider(request,timeout):
+  assert request.full_url=='https://api.brevo.com/v3/smtp/email'
+  assert request.get_header('Api-key')=='test-only' and timeout==15
+  payload=json.loads(request.data)
+  assert payload['sender']=={'name':'TONA','email':'sender@example.com'}
+  assert payload['to']==[{'email':email}]
+  codes.append(main.re.search(r'\b\d{6}\b',payload['textContent']).group())
+  return io.BytesIO(b'{"messageId":"accepted"}' if len(codes)==1 else b'{}')
+ monkeypatch.setattr(main.urllib.request,'urlopen',provider)
+ assert client.get('/api/config').json()['email_ready']
+ assert client.post('/api/auth/email/request',json={'contact':email}).status_code==200
+ assert client.post('/api/auth/email/verify',json={'email':email,'code':codes[0]}).status_code==200
+ assert client.get('/api/me').json()['verified_email']==email
+ assert client.post('/api/auth/email/request',json={'contact':email}).status_code==502
+ assert client.post('/api/auth/email/verify',json={'email':email,'code':codes[-1]}).status_code==400
